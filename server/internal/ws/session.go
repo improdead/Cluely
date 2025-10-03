@@ -79,7 +79,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 func (s *Session) run() {
 	ctx := context.Background()
 	s.c.SetReadLimit(1 << 20) // 1MB
-	_ = s.c.SetReadDeadline(time.Now().Add(35 * time.Second))
 	defer func() {
 		if s.asr != nil {
 			s.asr.Close()
@@ -94,7 +93,9 @@ func (s *Session) run() {
 	}
 
 	for {
-		typ, data, err := s.c.Read(ctx)
+		readCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		typ, data, err := s.c.Read(readCtx)
+		cancel()
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return
@@ -102,7 +103,6 @@ func (s *Session) run() {
 			log.Printf("ws read error: %v", err)
 			return
 		}
-		_ = s.c.SetReadDeadline(time.Now().Add(35 * time.Second))
 		switch typ {
 		case websocket.MessageBinary:
 			// Forward PCM to ASR if available
@@ -197,8 +197,8 @@ func (s *Session) handleText(data []byte) error {
 			return err
 		}
 		if m.Final && s.hints.Allow() {
-			ocr := s.snapshotOCR()
-			if ans := s.ans.Micro(m.Text, ocr); ans != nil {
+			ocr, first, last := s.snapshotOCRContext()
+			if ans := s.ans.Micro(m.Text, ocr, first, last); ans != nil {
 				_ = s.sendJSON(map[string]any{"type": "hint", "text": ans.Answer, "ttlMs": 4500})
 				if ans.FollowUp != "" {
 					_ = s.sendJSON(map[string]any{"type": "followup", "text": ans.FollowUp, "ttlMs": 4500})
@@ -209,14 +209,6 @@ func (s *Session) handleText(data []byte) error {
 	default:
 		return nil
 	}
-}
-
-func (s *Session) snapshotOCR() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]string, len(s.ocrTokens))
-	copy(out, s.ocrTokens)
-	return out
 }
 
 func (s *Session) snapshotOCRContext() (ocr, first, last []string) {

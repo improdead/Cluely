@@ -32,7 +32,7 @@ type Client struct {
 
 func NewClient() (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-bufSize := envOrInt("ASR_PCM_BUFFER", 128)
+	bufSize := envOrInt("ASR_PCM_BUFFER", 128)
 	c := &Client{
 		ctx:    ctx,
 		cancel: cancel,
@@ -65,13 +65,15 @@ func (c *Client) start() error {
 		StreamingRequest: &speechpb.StreamingRecognizeRequest_StreamingConfig{
 			StreamingConfig: &speechpb.StreamingRecognitionConfig{
 				Config: &speechpb.RecognitionConfig{
-					ExplicitDecodingConfig: &speechpb.ExplicitDecodingConfig{
-						Encoding:        speechpb.ExplicitDecodingConfig_LINEAR16,
-						SampleRateHertz: 16000,
-						AudioChannelCount: 1,
+					DecodingConfig: &speechpb.RecognitionConfig_ExplicitDecodingConfig{
+						ExplicitDecodingConfig: &speechpb.ExplicitDecodingConfig{
+							Encoding:          speechpb.ExplicitDecodingConfig_LINEAR16,
+							SampleRateHertz:   16000,
+							AudioChannelCount: 1,
+						},
 					},
 					LanguageCodes: []string{"en-US"},
-					Model: "latest_long", // or "latest_short" for lower latency
+					Model:         "latest_long", // or "latest_short" for lower latency
 				},
 				StreamingFeatures: &speechpb.StreamingRecognitionFeatures{
 					InterimResults: true,

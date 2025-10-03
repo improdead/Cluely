@@ -47,7 +47,7 @@ struct RootWindow: View {
         }
       }
     }
-    .ornament(attachmentAnchor: .scene(alignment: .bottom)) {
+    .ornament(attachmentAnchor: .scene(.bottom)) {
       OrnamentControls().environmentObject(s)
     }
   }

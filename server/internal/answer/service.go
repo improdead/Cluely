@@ -3,7 +3,6 @@ package answer
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,8 +11,8 @@ import (
 )
 
 type Answer struct {
-	Answer    string  `json:"answer"`
-	FollowUp  string  `json:"followUp"`
+	Answer     string  `json:"answer"`
+	FollowUp   string  `json:"followUp"`
 	Confidence float64 `json:"confidence,omitempty"`
 }
 
@@ -96,7 +95,9 @@ func (s *Service) Micro(text string, ocr []string, firstOCR []string, lastOCR []
 type geminiResp struct {
 	Candidates []struct {
 		Content struct {
-			Parts []struct{ Text string `json:"text"` } `json:"parts"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
 }
