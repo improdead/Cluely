@@ -111,6 +111,16 @@ final class SessionController: ObservableObject {
       return
     }
     switch ev.type {
+    case "hint_partial":
+      if let t = ev.text {
+        lastHint = t
+        currentHint = compose()
+      }
+    case "followup_partial":
+      if let t = ev.text {
+        lastFollow = t
+        currentHint = compose()
+      }
     case "hint":
       if let t = ev.text, coach.shouldShow(t) {
         lastHint = t

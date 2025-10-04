@@ -1,8 +1,16 @@
 package answer
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
 type Answer struct {
@@ -11,10 +19,35 @@ type Answer struct {
 	Confidence float64 `json:"confidence,omitempty"`
 }
 
-type Service struct{}
+type Service struct {
+	apiKey  string
+	model   string
+	client  *http.Client
+	baseURL string
+}
+
+const (
+	geminiBaseURL  = "https://generativelanguage.googleapis.com/v1beta"
+	defaultGemini  = "gemini-1.5-flash"
+	requestTimeout = 8 * time.Second
+)
 
 func NewServiceFromEnv() *Service {
-	return &Service{}
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
+	base := strings.TrimSpace(os.Getenv("GEMINI_BASE_URL"))
+	if model == "" {
+		model = defaultGemini
+	}
+	if base == "" {
+		base = geminiBaseURL
+	}
+	return &Service{
+		apiKey:  apiKey,
+		model:   model,
+		client:  &http.Client{Timeout: requestTimeout},
+		baseURL: base,
+	}
 }
 
 func (s *Service) Micro(text string, ocr []string, firstOCR []string, lastOCR []string) *Answer {
@@ -23,23 +56,168 @@ func (s *Service) Micro(text string, ocr []string, firstOCR []string, lastOCR []
 		log.Println("[answer] empty text, skipping")
 		return nil
 	}
-
-	contextTokens := contextualTokens(ocr, firstOCR, lastOCR)
-	answer := craftAnswer(transcript, contextTokens)
-	followUp := craftFollowUp(transcript, contextTokens)
-
-	if answer == "" {
-		answer = "Reflect key concern and reassure next steps"
-	}
-	if followUp == "" {
-		followUp = "Ask: 'What would make you comfortable to proceed?'"
+	if s.apiKey == "" {
+		log.Println("[answer] GEMINI_API_KEY is not set; cannot generate hint")
+		return nil
 	}
 
-	return &Answer{
-		Answer:     answer,
-		FollowUp:   followUp,
-		Confidence: 0.4,
+	prompt := buildPrompt(transcript, ocr, firstOCR, lastOCR)
+	ans, err := s.callGemini(prompt)
+	if err != nil {
+		log.Printf("[answer] gemini request failed: %v", err)
+		return nil
 	}
+	return ans
+}
+
+func buildPrompt(transcript string, ocr []string, first []string, last []string) string {
+	uniqTokens := contextualTokens(ocr, first, last)
+	var sb strings.Builder
+
+	// Core identity: who you are and what to do
+	sb.WriteString("<core_identity> You are Cluely, a real-time on-glass sales coach created by Cluely. Your sole purpose is to analyze the conversation and what's on the screen, then deliver exactly one tactical coaching hint and one crisp follow-up question that advances the deal. Be specific, accurate, and immediately actionable. </core_identity> ")
+
+	// Hard rules and safety constraints
+	sb.WriteString("<rules> NEVER use meta-phrases or pleasantries. NEVER reveal or mention models/providers. NEVER mention 'screenshot' or 'image'—say 'the screen' if needed. NEVER summarize the transcript unless explicitly asked. DO NOT add explanations, markdown, code fences, or keys beyond answer and followUp. Do not invent names, figures, or commitments. Avoid double quotes inside values to keep JSON valid; paraphrase instead. If uncertain, state that briefly and ask the minimum clarifier. </rules> ")
+
+	// How to interpret context and adapt coaching
+	sb.WriteString("<context_model> Focus on meaning over keywords. Weight OCR by recency: 'Last frame tokens' = what's visible now (highest signal); 'First frame tokens' = persistent session context; 'Unique context tokens' = disambiguation. Infer stage: discovery (goals, pain, why-now), evaluation (architecture, pilot, metrics), negotiation (pricing, budget, procurement, legal). Adapt: discovery -> clarify outcome + next step; evaluation -> tie feature to their outcome and propose pilot/measure; negotiation -> surface blockers, decision path/owners, and close timeline. </context_model> ")
+
+	// Output contract
+	sb.WriteString("<output_contract> Return EXACTLY one compact JSON object only: {\"answer\":\"<=22 words, directive, empathetic, concrete\",\"followUp\":\"<=16 words, one open-ended question\"}. No newlines, no extra whitespace, no code fences, no other keys. </output_contract> ")
+
+	// Quality bar and examples
+	sb.WriteString("<quality> The answer proposes one next move (e.g., anchor ROI to budget owner, confirm risk mitigation, propose time-bound step). The followUp asks one specific question that progresses approval, scope, or timeline. Examples—answer: 'Tie uptime risk to your SLOs; propose a 2-week pilot'. followUp: 'Who owns final approval on this?'. </quality> ")
+
+	// Inject live context
+	sb.WriteString("Transcript:\n")
+	sb.WriteString(transcript)
+	sb.WriteString("\n\nRecent OCR tokens: ")
+	if len(ocr) == 0 {
+		sb.WriteString("none")
+	} else {
+		sb.WriteString(strings.Join(ocr, ", "))
+	}
+	sb.WriteString("\nFirst frame tokens: ")
+	if len(first) == 0 {
+		sb.WriteString("none")
+	} else {
+		sb.WriteString(strings.Join(first, ", "))
+	}
+	sb.WriteString("\nLast frame tokens: ")
+	if len(last) == 0 {
+		sb.WriteString("none")
+	} else {
+		sb.WriteString(strings.Join(last, ", "))
+	}
+	sb.WriteString("\nUnique context tokens: ")
+	if len(uniqTokens) == 0 {
+		sb.WriteString("none")
+	} else {
+		sb.WriteString(strings.Join(uniqTokens, ", "))
+	}
+	return sb.String()
+}
+
+func (s *Service) callGemini(prompt string) (*Answer, error) {
+	requestPayload := geminiRequest{
+		Contents: []geminiContent{
+			{
+				Role:  "user",
+				Parts: []geminiPart{{Text: prompt}},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			Temperature:     0.7,
+			TopP:            0.95,
+			TopK:            32,
+			MaxOutputTokens: 120,
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(requestPayload); err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", strings.TrimRight(s.baseURL, "/"), s.model, s.apiKey)
+	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, parseGeminiError(resp)
+	}
+
+	var genResp geminiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	candidateText := extractCandidateText(genResp.Candidates)
+	if candidateText == "" {
+		return nil, errors.New("gemini returned empty candidate text")
+	}
+	candidateText = trimCodeFence(candidateText)
+
+	var ans Answer
+	if err := json.Unmarshal([]byte(candidateText), &ans); err != nil {
+		return nil, fmt.Errorf("unmarshal candidate: %w", err)
+	}
+	if ans.Answer == "" && ans.FollowUp == "" {
+		return nil, errors.New("gemini returned empty payload")
+	}
+	if ans.Confidence == 0 {
+		ans.Confidence = 0.8
+	}
+	return &ans, nil
+}
+
+func parseGeminiError(resp *http.Response) error {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("gemini http %d: failed to read error body: %w", resp.StatusCode, err)
+	}
+	var apiErr geminiError
+	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
+		return fmt.Errorf("gemini http %d: %s", resp.StatusCode, apiErr.Error.Message)
+	}
+	return fmt.Errorf("gemini http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+func extractCandidateText(candidates []geminiCandidate) string {
+	for _, c := range candidates {
+		for _, part := range c.Content.Parts {
+			if t := strings.TrimSpace(part.Text); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+func trimCodeFence(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "```") {
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+		if strings.HasPrefix(strings.ToLower(trimmed), "json") {
+			trimmed = strings.TrimSpace(trimmed[4:])
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+	return trimmed
 }
 
 func contextualTokens(ocr []string, firstOCR []string, lastOCR []string) []string {
@@ -50,75 +228,56 @@ func contextualTokens(ocr []string, firstOCR []string, lastOCR []string) []strin
 	seen := make(map[string]struct{}, len(merged))
 	uniq := make([]string, 0, len(merged))
 	for _, token := range merged {
-		token = strings.TrimSpace(strings.ToLower(token))
-		if token == "" {
+		normalized := strings.TrimSpace(strings.ToLower(token))
+		if normalized == "" {
 			continue
 		}
-		if _, ok := seen[token]; ok {
+		if _, ok := seen[normalized]; ok {
 			continue
 		}
-		seen[token] = struct{}{}
-		uniq = append(uniq, token)
+		seen[normalized] = struct{}{}
+		uniq = append(uniq, normalized)
 	}
 	return uniq
 }
 
-func craftAnswer(transcript string, tokens []string) string {
-	lower := strings.ToLower(transcript)
-
-	if strings.Contains(lower, "budget") {
-		return "Highlight fiscal upside and ask who approves budget"
-	}
-	if strings.Contains(lower, "timeline") || strings.Contains(lower, "schedule") {
-		return "Lock a concrete timeline before momentum fades"
-	}
-	if strings.Contains(lower, "concern") || strings.Contains(lower, "worried") {
-		return "Acknowledge concern and offer next step to de-risk"
-	}
-	if strings.Contains(lower, "not sure") || strings.Contains(lower, "confused") {
-		return "Clarify the core value prop in plain language"
-	}
-
-	for _, token := range tokens {
-		switch token {
-		case "revenue", "forecast", "q4":
-			return "Frame the revenue story around leading indicators"
-		case "architecture", "design", "diagram":
-			return "Translate the architecture into executive outcomes"
-		case "hiring", "headcount":
-			return "Clarify hiring impact on roadmap commitments"
-		}
-	}
-
-	return "Reinforce their goal and propose a decisive next step"
+type geminiRequest struct {
+	Contents         []geminiContent         `json:"contents"`
+	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
-func craftFollowUp(transcript string, tokens []string) string {
-	lower := strings.ToLower(transcript)
+type geminiContent struct {
+	Role  string       `json:"role,omitempty"`
+	Parts []geminiPart `json:"parts"`
+}
 
-	if strings.Contains(lower, "budget") {
-		return "Ask: 'Who signs off on the numbers?'"
-	}
-	if strings.Contains(lower, "timeline") {
-		return "Ask: 'What deadline should we plan against?'"
-	}
-	if strings.Contains(lower, "risk") {
-		return "Ask: 'Which risk matters most right now?'"
-	}
-	if strings.Contains(lower, "decision") {
-		return "Ask: 'What do you need to decide today?'"
-	}
+type geminiPart struct {
+	Text string `json:"text,omitempty"`
+}
 
-	for _, token := range tokens {
-		switch token {
-		case "roadmap":
-			return "Ask: 'Which milestone is most critical?'"
-		case "contract":
-			return "Ask: 'Any blockers before we finalize?'"
-		case "metrics":
-			return "Ask: 'Which metric should we steer toward?'"
-		}
-	}
+type geminiGenerationConfig struct {
+	Temperature     float64 `json:"temperature,omitempty"`
+	TopP            float64 `json:"topP,omitempty"`
+	TopK            int     `json:"topK,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+}
 
-	return "Ask: 'What would help you move forward?'"
+type geminiResponse struct {
+	Candidates []geminiCandidate `json:"candidates"`
+}
+
+type geminiCandidate struct {
+	Content struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	} `json:"content"`
+}
+
+type geminiError struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
 }

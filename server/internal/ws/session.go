@@ -151,20 +151,11 @@ func (s *Session) relayASR() {
 		if err := s.sendJSON(map[string]any{"type": ev.Type, "text": ev.Text}); err != nil {
 			log.Printf("[session] send %s error: %v", ev.Type, err)
 		}
-		// On final, generate hint if rate-limit allows
+		// On final, generate and stream hint if rate-limit allows
 		if ev.IsFinal && s.hints.Allow() {
 			ocr, first, last := s.snapshotOCRContext()
 			if ans := s.ans.Micro(ev.Text, ocr, first, last); ans != nil {
-				obs.IncHint()
-				if err := s.sendJSON(map[string]any{"type": "hint", "text": ans.Answer, "ttlMs": 4500}); err != nil {
-					log.Printf("[session] send hint error: %v", err)
-				}
-				if ans.FollowUp != "" {
-					obs.IncFollowup()
-					if err := s.sendJSON(map[string]any{"type": "followup", "text": ans.FollowUp, "ttlMs": 4500}); err != nil {
-						log.Printf("[session] send followup error: %v", err)
-					}
-				}
+				s.streamAnswer(ans)
 			} else {
 				obs.IncErrorAnswer()
 			}
@@ -173,6 +164,7 @@ func (s *Session) relayASR() {
 }
 
 func (s *Session) handleText(data []byte) error {
+	log.Printf("[session] received: %s", string(data))
 	var m upMsg
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
@@ -209,10 +201,7 @@ func (s *Session) handleText(data []byte) error {
 		if m.Final && s.hints.Allow() {
 			ocr, first, last := s.snapshotOCRContext()
 			if ans := s.ans.Micro(m.Text, ocr, first, last); ans != nil {
-				_ = s.sendJSON(map[string]any{"type": "hint", "text": ans.Answer, "ttlMs": 4500})
-				if ans.FollowUp != "" {
-					_ = s.sendJSON(map[string]any{"type": "followup", "text": ans.FollowUp, "ttlMs": 4500})
-				}
+				s.streamAnswer(ans)
 			}
 		}
 		return nil
@@ -239,9 +228,47 @@ func (s *Session) sendJSON(v any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	b, _ := json.Marshal(v)
+	log.Printf("[session] sending: %s", string(b))
 	return s.c.Write(ctx, websocket.MessageText, b)
 }
 
 func (s *Session) close(code websocket.StatusCode, reason string) {
 	s.closedOnce.Do(func() { _ = s.c.Close(code, reason) })
+}
+
+// streamAnswer sends token-by-token partial updates to the client for a smoother UI,
+// then emits the final hint/followup events for stability.
+func (s *Session) streamAnswer(ans *answer.Answer) {
+	go func() {
+		// stream answer tokens
+		if strings.TrimSpace(ans.Answer) != "" {
+			var partial string
+			toks := strings.Fields(ans.Answer)
+			for i, t := range toks {
+				if i > 0 {
+					partial += " "
+				}
+				partial += t
+				_ = s.sendJSON(map[string]any{"type": "hint_partial", "text": partial})
+				time.Sleep(50 * time.Millisecond)
+			}
+			obs.IncHint()
+			_ = s.sendJSON(map[string]any{"type": "hint", "text": ans.Answer, "ttlMs": 4500})
+		}
+		// stream follow-up tokens
+		if strings.TrimSpace(ans.FollowUp) != "" {
+			var partial string
+			toks := strings.Fields(ans.FollowUp)
+			for i, t := range toks {
+				if i > 0 {
+					partial += " "
+				}
+				partial += t
+				_ = s.sendJSON(map[string]any{"type": "followup_partial", "text": partial})
+				time.Sleep(50 * time.Millisecond)
+			}
+			obs.IncFollowup()
+			_ = s.sendJSON(map[string]any{"type": "followup", "text": ans.FollowUp, "ttlMs": 4500})
+		}
+	}()
 }
