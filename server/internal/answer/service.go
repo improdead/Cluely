@@ -1,13 +1,8 @@
 package answer
 
 import (
-	"bytes"
-	"encoding/json"
 	"log"
-	"net/http"
-	"os"
 	"strings"
-	"time"
 )
 
 type Answer struct {
@@ -16,173 +11,114 @@ type Answer struct {
 	Confidence float64 `json:"confidence,omitempty"`
 }
 
-type Service struct {
-	apiKey string
-	model  string
-	http   *http.Client
-}
+type Service struct{}
 
 func NewServiceFromEnv() *Service {
-	key := os.Getenv("GEMINI_API_KEY")
-	model := os.Getenv("GEMINI_MODEL")
-	if model == "" {
-		model = "gemini-flash-lite-latest"
-	}
-	return &Service{
-		apiKey: key,
-		model:  model,
-		http:   &http.Client{Timeout: 4 * time.Second},
-	}
+	return &Service{}
 }
 
-// Micro produces a concise two-line hint and follow-up using Gemini.
-// If no API key is present, returns a deterministic fallback.
-// firstOCR and lastOCR are optional OCR tokens from start/end of speech segment.
 func (s *Service) Micro(text string, ocr []string, firstOCR []string, lastOCR []string) *Answer {
-	if strings.TrimSpace(text) == "" {
+	transcript := strings.TrimSpace(text)
+	if transcript == "" {
 		log.Println("[answer] empty text, skipping")
 		return nil
 	}
-	if s.apiKey == "" {
-		log.Println("[answer] GEMINI_API_KEY missing, using fallback")
-		return &Answer{Answer: "Confirm budget owner", FollowUp: "Ask preferred timeline", Confidence: 0.5}
+
+	contextTokens := contextualTokens(ocr, firstOCR, lastOCR)
+	answer := craftAnswer(transcript, contextTokens)
+	followUp := craftFollowUp(transcript, contextTokens)
+
+	if answer == "" {
+		answer = "Reflect key concern and reassure next steps"
+	}
+	if followUp == "" {
+		followUp = "Ask: 'What would make you comfortable to proceed?'"
 	}
 
-	prompt := buildPrompt(text, ocr, firstOCR, lastOCR)
-	endpoint := "https://generativelanguage.googleapis.com/v1beta/models/" + s.model + ":generateContent?key=" + s.apiKey
-	body := map[string]any{
-		"contents": []any{
-			map[string]any{
-				"parts": []any{map[string]any{"text": prompt}},
-			},
-		},
-		"generationConfig": map[string]any{
-			"temperature":     0.6,
-			"maxOutputTokens": 128,
-		},
+	return &Answer{
+		Answer:     answer,
+		FollowUp:   followUp,
+		Confidence: 0.4,
 	}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	var gr geminiResp
-	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-		return nil
-	}
-	textOut := gr.FirstText()
-	if textOut == "" {
-		return nil
-	}
-	// Attempt strict JSON first
-	var a Answer
-	if json.Unmarshal([]byte(textOut), &a) == nil && a.Answer != "" {
-		return &a
-	}
-	// Fallback: split lines
-	lines := strings.Split(strings.TrimSpace(textOut), "\n")
-	ans := strings.TrimSpace(lines[0])
-	follow := ""
-	if len(lines) > 1 {
-		follow = strings.TrimSpace(lines[1])
-	}
-	return &Answer{Answer: ans, FollowUp: follow, Confidence: 0.7}
 }
 
-type geminiResp struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
+func contextualTokens(ocr []string, firstOCR []string, lastOCR []string) []string {
+	merged := append([]string{}, ocr...)
+	merged = append(merged, firstOCR...)
+	merged = append(merged, lastOCR...)
 
-func (r geminiResp) FirstText() string {
-	if len(r.Candidates) == 0 || len(r.Candidates[0].Content.Parts) == 0 {
-		return ""
+	seen := make(map[string]struct{}, len(merged))
+	uniq := make([]string, 0, len(merged))
+	for _, token := range merged {
+		token = strings.TrimSpace(strings.ToLower(token))
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		uniq = append(uniq, token)
 	}
-	return r.Candidates[0].Content.Parts[0].Text
+	return uniq
 }
 
-func buildPrompt(text string, ocr []string, firstOCR []string, lastOCR []string) string {
-	// Build rich context from OCR tokens
-	var contextParts []string
-	if len(firstOCR) > 0 {
-		contextParts = append(contextParts, "Screen at start: "+strings.Join(firstOCR, ", "))
+func craftAnswer(transcript string, tokens []string) string {
+	lower := strings.ToLower(transcript)
+
+	if strings.Contains(lower, "budget") {
+		return "Highlight fiscal upside and ask who approves budget"
 	}
-	if len(lastOCR) > 0 && !equalSlices(firstOCR, lastOCR) {
-		contextParts = append(contextParts, "Screen at end: "+strings.Join(lastOCR, ", "))
+	if strings.Contains(lower, "timeline") || strings.Contains(lower, "schedule") {
+		return "Lock a concrete timeline before momentum fades"
 	}
-	if len(ocr) > 0 && len(firstOCR) == 0 && len(lastOCR) == 0 {
-		contextParts = append(contextParts, "Visible text: "+strings.Join(ocr, ", "))
+	if strings.Contains(lower, "concern") || strings.Contains(lower, "worried") {
+		return "Acknowledge concern and offer next step to de-risk"
 	}
-	visualContext := ""
-	if len(contextParts) > 0 {
-		visualContext = "\n\nVisual Context:\n" + strings.Join(contextParts, "\n")
+	if strings.Contains(lower, "not sure") || strings.Contains(lower, "confused") {
+		return "Clarify the core value prop in plain language"
 	}
 
-	return `You are Cluely, an elite executive coach powered by real-time context.
-
-Your Role:
-- You provide instant, actionable micro-coaching during live conversations, meetings, presentations, and interviews
-- You see what the user sees (via screen OCR) and hear what they hear (via transcription)
-- Your guidance helps users navigate critical moments with confidence and strategic insight
-
-Your Coaching Principles:
-1. BE SPECIFIC: Reference actual content from the transcript and visual context
-2. BE ACTIONABLE: Suggest concrete next steps, not generic advice
-3. BE STRATEGIC: Think like an executive coach—identify opportunities, risks, and power dynamics
-4. BE CONCISE: Deliver maximum insight in minimum words
-5. BE CONTEXT-AWARE: Use screen content to understand the situation deeply
-
-Output Format:
-{
-  "answer": "<Your primary insight or suggestion (≤20 words)>",
-  "followUp": "<Your tactical next step or clarifying question (≤12 words)>"
-}
-
-Examples:
-
-Transcript: "So our Q4 revenue was down 8% but user engagement is up"
-Screen: "Q4 Financial Summary, Revenue: $2.1M, MAU: 45K"
-{
-  "answer": "Pivot to engagement growth story—higher LTV potential",
-  "followUp": "Ask: 'What's driving the MAU increase?'"
-}
-
-Transcript: "I'm not sure I understand the technical architecture you're proposing"
-Screen: "System Design Diagram, Microservices, API Gateway"
-{
-  "answer": "They're confused—simplify the explanation now",
-  "followUp": "Use analogy: 'Like separate apps talking via messages'"
-}
-
-Transcript: "We can probably meet Friday to discuss the terms"
-{
-  "answer": "'Probably' signals low commitment—confirm availability now",
-  "followUp": "Ask: 'Friday 2pm works—shall I send invite?'"
-}
-
-Now, analyze this interaction:
-
-Transcript: "` + text + `"` + visualContext + `
-
-Provide your coaching in strict JSON format (keys: "answer", "followUp"):`
-}
-
-func equalSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+	for _, token := range tokens {
+		switch token {
+		case "revenue", "forecast", "q4":
+			return "Frame the revenue story around leading indicators"
+		case "architecture", "design", "diagram":
+			return "Translate the architecture into executive outcomes"
+		case "hiring", "headcount":
+			return "Clarify hiring impact on roadmap commitments"
 		}
 	}
-	return true
+
+	return "Reinforce their goal and propose a decisive next step"
+}
+
+func craftFollowUp(transcript string, tokens []string) string {
+	lower := strings.ToLower(transcript)
+
+	if strings.Contains(lower, "budget") {
+		return "Ask: 'Who signs off on the numbers?'"
+	}
+	if strings.Contains(lower, "timeline") {
+		return "Ask: 'What deadline should we plan against?'"
+	}
+	if strings.Contains(lower, "risk") {
+		return "Ask: 'Which risk matters most right now?'"
+	}
+	if strings.Contains(lower, "decision") {
+		return "Ask: 'What do you need to decide today?'"
+	}
+
+	for _, token := range tokens {
+		switch token {
+		case "roadmap":
+			return "Ask: 'Which milestone is most critical?'"
+		case "contract":
+			return "Ask: 'Any blockers before we finalize?'"
+		case "metrics":
+			return "Ask: 'Which metric should we steer toward?'"
+		}
+	}
+
+	return "Ask: 'What would help you move forward?'"
 }

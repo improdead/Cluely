@@ -24,7 +24,7 @@ func main() {
 
 	// hello
 	_ = writeJSON(ctx, c, map[string]any{"type": "hello"})
-	// send a final transcript to trigger Gemini
+	// send a final transcript to trigger the heuristic hint engine
 	_ = writeJSON(ctx, c, map[string]any{
 		"type":  "transcript",
 		"text":  "We can meet on Friday to review the budget and next steps.",
@@ -50,4 +50,9 @@ func writeJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	return c.Write(wctx, websocket.MessageText, b)
 }
 
-func envOr(k, d string) string { if v := os.Getenv(k); v != "" { return v }; return d }
+func envOr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}

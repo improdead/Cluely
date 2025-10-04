@@ -34,9 +34,9 @@ func main() {
 	// Test 1: Simple transcript (no OCR)
 	fmt.Println("\n📝 Test 1: Simple transcript")
 	sendJSON(ctx, c, map[string]any{
-		"type":  "hello",
-		"app":   "cluely-test",
-		"ver":   "test",
+		"type": "hello",
+		"app":  "cluely-test",
+		"ver":  "test",
 	})
 	time.Sleep(200 * time.Millisecond)
 
@@ -102,8 +102,7 @@ func main() {
 	time.Sleep(3 * time.Second)
 
 	fmt.Println("\n✅ All tests sent! Check responses above.")
-	fmt.Println("💡 Tip: If you see hints, Gemini is working correctly!")
-	fmt.Println("⚠️  If you see fallback hints, check your GEMINI_API_KEY")
+	fmt.Println("💡 Tip: Hints are generated locally—no API keys required!")
 	time.Sleep(1 * time.Second)
 }
 

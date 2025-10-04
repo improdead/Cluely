@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -55,11 +56,20 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	// Build ASR client
-	asrClient, err := asr.NewClient()
-	if err != nil {
-		log.Printf("asr init failed (fallback to transcript helper): %v", err)
-		// If ASR fails (e.g., no GCP creds), continue without it
+	log.Printf("ws client connected: %s", r.RemoteAddr)
+	// Build ASR client (only if explicitly requested)
+	var asrClient *asr.Client
+	switch provider := strings.ToLower(strings.TrimSpace(os.Getenv("ASR_PROVIDER"))); provider {
+	case "", "disabled", "none":
+		log.Printf("asr disabled via ASR_PROVIDER=%s", provider)
+	case "stub":
+		asrClient, err = asr.NewClient()
+		if err != nil {
+			log.Printf("asr init failed (fallback to transcript helper): %v", err)
+			// If ASR fails, continue without it
+		}
+	default:
+		log.Printf("asr provider %q not supported; disabling ASR", provider)
 	}
 	// Build session
 	s := &Session{
