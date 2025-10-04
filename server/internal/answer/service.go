@@ -252,7 +252,13 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	InlineData *geminiInlineData `json:"inlineData,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type geminiGenerationConfig struct {
@@ -268,9 +274,7 @@ type geminiResponse struct {
 
 type geminiCandidate struct {
 	Content struct {
-		Parts []struct {
-			Text string `json:"text"`
-		} `json:"parts"`
+		Parts []geminiPart `json:"parts"`
 	} `json:"content"`
 }
 

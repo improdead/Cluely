@@ -38,7 +38,7 @@ type upMsg struct {
 type Session struct {
 	c            *websocket.Conn
 	ans          *answer.Service
-	asr          *asr.Client
+	asr          asr.Client
 	ocrTokens    []string
 	firstOCR     []string
 	lastOCR      []string
@@ -58,15 +58,19 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("ws client connected: %s", r.RemoteAddr)
 	// Build ASR client (only if explicitly requested)
-	var asrClient *asr.Client
+	var asrClient asr.Client
 	switch provider := strings.ToLower(strings.TrimSpace(os.Getenv("ASR_PROVIDER"))); provider {
 	case "", "disabled", "none":
 		log.Printf("asr disabled via ASR_PROVIDER=%s", provider)
 	case "stub":
-		asrClient, err = asr.NewClient()
+		asrClient, err = asr.New("stub")
 		if err != nil {
 			log.Printf("asr init failed (fallback to transcript helper): %v", err)
-			// If ASR fails, continue without it
+		}
+	case "gemini":
+		asrClient, err = asr.New("gemini")
+		if err != nil {
+			log.Printf("asr init failed (fallback to transcript helper): %v", err)
 		}
 	default:
 		log.Printf("asr provider %q not supported; disabling ASR", provider)
@@ -91,6 +95,7 @@ func (s *Session) run() {
 	s.c.SetReadLimit(1 << 20) // 1MB
 	defer func() {
 		if s.asr != nil {
+			s.asr.Flush()
 			s.asr.Close()
 		}
 		obs.DecSessionActive()
@@ -185,6 +190,9 @@ func (s *Session) handleText(data []byte) error {
 		return nil
 	case "stop":
 		s.setListening(false)
+		if s.asr != nil {
+			s.asr.Flush()
+		}
 		return s.sendJSON(map[string]any{"type": "state", "listening": s.listening})
 	case "transcript":
 		if m.Text == "" {
