@@ -2,6 +2,7 @@ package asr
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,8 +25,11 @@ func TestGeminiClientFlushEmitsFinalEvent(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/models/test-model:generateContent" {
+		if r.URL.Path != "/models/test-model:streamGenerateContent" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if q := r.URL.Query().Get("alt"); q != "sse" {
+			t.Fatalf("expected alt=sse, got %q", q)
 		}
 		var payload requestPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -38,8 +42,20 @@ func TestGeminiClientFlushEmitsFinalEvent(t *testing.T) {
 		if inline == nil || inline.MimeType != "audio/pcm;rate=16000" {
 			t.Fatalf("missing inline audio: %#v", inline)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hello world"}]}}]}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello world\"}]},\"finishReason\":\"STOP\"}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 	defer srv.Close()
 
@@ -60,13 +76,37 @@ func TestGeminiClientFlushEmitsFinalEvent(t *testing.T) {
 
 	select {
 	case evt := <-client.Events():
-		if !evt.IsFinal || evt.Type != "final" {
-			t.Fatalf("unexpected event metadata: %#v", evt)
+		if evt.IsFinal || evt.Type != "partial" {
+			t.Fatalf("unexpected first event: %#v", evt)
+		}
+		if evt.Text != "hello" {
+			t.Fatalf("unexpected transcript: %q", evt.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first partial event")
+	}
+
+	select {
+	case evt := <-client.Events():
+		if evt.IsFinal || evt.Type != "partial" {
+			t.Fatalf("unexpected second event: %#v", evt)
 		}
 		if evt.Text != "hello world" {
 			t.Fatalf("unexpected transcript: %q", evt.Text)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for event")
+		t.Fatal("timed out waiting for second partial event")
+	}
+
+	select {
+	case evt := <-client.Events():
+		if !evt.IsFinal || evt.Type != "final" {
+			t.Fatalf("unexpected final event: %#v", evt)
+		}
+		if evt.Text != "hello world" {
+			t.Fatalf("unexpected transcript: %q", evt.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final event")
 	}
 }
