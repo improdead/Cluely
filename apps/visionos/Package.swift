@@ -9,14 +9,21 @@ let package = Package(
     products: [
         .executable(name: "Cluely", targets: ["Cluely"])
     ],
-    dependencies: [
-        // Add any dependencies here if needed
-    ],
     targets: [
         .executableTarget(
             name: "Cluely",
+            path: "CluelyApp",
             resources: [
-                .copy("CluelyApp/Resources/Info.plist")
+                .process("Resources")
+            ],
+            swiftSettings: [
+                .enableUpcomingFeature("BareSlashRegexLiterals")
+            ],
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("Vision"),
+                .linkedFramework("ReplayKit"),
+                .linkedFramework("Accelerate")
             ]
         )
     ]

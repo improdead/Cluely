@@ -45,6 +45,15 @@ CluelyApp/
 
 ## Setup Instructions
 
+### Option 0: Open the Swift Package (Xcode 15+)
+
+1. Open Xcode and choose **File → Open...**
+2. Navigate to this repository and select `apps/visionos/Package.swift`
+3. Xcode will materialise the package with the `Cluely` executable target preconfigured with the required frameworks
+4. Pick the **Apple Vision Pro** simulator and build/run as usual
+
+> If you're using an older Xcode that can't open Swift packages directly as apps, use the manual setup below instead.
+
 ### Option 1: Manual Xcode Setup (Recommended)
 
 1. **Create New Project**
