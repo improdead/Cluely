@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Xcode / Swift Package artifacts
+DerivedData/
+.swiftpm/
+.build/
+*.xcodeproj/
+*.xcworkspace/
+
+# Swift package resolution cache
+Package.resolved
+
+# Go build outputs
+server/bin/
+server/dist/
+
+# Logs
+*.log
+
+# Editor swap/backup files
+*~
+*.swp
