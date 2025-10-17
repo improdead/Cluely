@@ -23,7 +23,8 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("Vision"),
                 .linkedFramework("ReplayKit"),
-                .linkedFramework("Accelerate")
+                .linkedFramework("Accelerate"),
+                .linkedFramework("SwiftUI")
             ]
         )
     ]
