@@ -112,3 +112,6 @@ To reach full production parity per `general_guide.md`:
 5. Polish UI (TTL fade animations, presenter-safe mode).
 
 Enjoy your MVP! 🚀
+
+
+<!-- Security fix: added by Esprit test -->
